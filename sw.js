@@ -1,6 +1,6 @@
 // Service worker : l'application s'ouvre même hors connexion.
 // Réseau d'abord (pour recevoir les mises à jour), copie locale en secours.
-const CACHE = 'charting-paro-v1';
+const CACHE = 'charting-paro-v2';
 const FILES = [
   './', 'index.html', 'manifest.json', 'css/style.css',
   'js/core.js', 'js/stats.js', 'js/chart.js', 'js/voice.js', 'js/demo.js', 'js/app.js',
@@ -21,7 +21,8 @@ self.addEventListener('fetch', e => {
   const req = e.request;
   if (req.method !== 'GET' || new URL(req.url).origin !== location.origin) return;
   e.respondWith(
-    fetch(req)
+    // no-cache : redemande toujours la dernière version au serveur (GitHub Pages garde sinon 10 min en cache)
+    fetch(req, { cache: 'no-cache' })
       .then(res => {
         const copy = res.clone();
         caches.open(CACHE).then(c => c.put(req, copy));
