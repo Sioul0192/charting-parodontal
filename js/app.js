@@ -179,7 +179,7 @@
     $('#interim').textContent = V.listening ? (V.interim || 'À l\'écoute…') : 'Micro arrêté';
     $('#hint').innerHTML = V.pass === 1
       ? 'Dictez 3 profondeurs puis 3 valeurs de marge (« 3 2 4 » puis « 0 -1 0 » ou « normal »). Sur les molaires, la furcation est ensuite demandée (« 0 », « 2 », « non » ; au palatin : mésiale puis distale, ex. « 1 2 »). Commandes : <i>suivant, retour, corriger, absente, implant, dent 26 palatin, mobilité 2, furcation 1, furcation distale 2, gencive 3, saignement mésial, 16 vestibulaire saignement distal, passage 2, stop</i>.'
-      : 'Une phrase par face : « saignement distal mésial, plaque partout », « suppuration centre », « rien ». Sans site précisé = les 3 sites. Pour une autre face sans quitter la dictée guidée : « 45 linguale suppuration distale ».';
+      : 'Enchaînez les indices de la face : « saignement distal mésial », « suppuration centre », « plaque partout » ; la face suivante est annoncée après 3 s de silence (ou dites « suivant »). « rien » = face suivante tout de suite. Sans site précisé = les 3 sites. Pour une autre face sans quitter la dictée guidée : « 45 linguale suppuration distale ».';
     $('#log').innerHTML = V.log.map(l => `<li>${l.heard ? `<q>${PC.esc(l.heard)}</q> → ` : ''}${l.msgs.map(PC.esc).join(' · ')}</li>`).join('');
   }
 
@@ -441,7 +441,7 @@
             <tr><td>« 2 » / « non »</td><td>molaires, après la marge : classe de furcation (0 à 3) ou absence ; au palatin des molaires maxillaires, mésiale puis distale (« 1 2 », ou « furcation distale 2 »)</td></tr>
             <tr><td>« marge … » / « profondeur … »</td><td>forcer la saisie de la marge ou de la profondeur</td></tr>
             <tr><td>« saignement distal mésial »</td><td>passage 2 : saignement sur les sites cités (sans site = les 3)</td></tr>
-            <tr><td>« plaque partout, suppuration centre »</td><td>passage 2 : plusieurs indices dans la même phrase</td></tr>
+            <tr><td>« plaque partout, suppuration centre »</td><td>passage 2 : plusieurs indices, dans la même phrase ou à la suite (face suivante après 3 s de silence)</td></tr>
             <tr><td>« pus distal »</td><td>équivaut à « suppuration distale » (mot court, mieux reconnu)</td></tr>
             <tr><td>« 16 vestibulaire saignement mésial »</td><td>n'importe quel moment : indique le saignement, la suppuration ou la plaque d'une face précise, sans déplacer la dictée (s'ajoute à ce qui est déjà noté)</td></tr>
             <tr><td>« 3 2 4 0 0 0 saignement mésial »</td><td>passage 1 : saignement noté sur la face qui vient d'être sondée</td></tr>

@@ -1,7 +1,7 @@
 'use strict';
 // Dictée vocale guidée : séquence de sondage, analyse des phrases, reconnaissance vocale (Web Speech API).
 
-PC.VERSION = '27/10 b'; // affichée dans l'en-tête pour vérifier la mise à jour sur le téléphone
+PC.VERSION = '27/10 c'; // affichée dans l'en-tête pour vérifier la mise à jour sur le téléphone
 
 PC.voice = (() => {
   const V = {
@@ -77,12 +77,13 @@ PC.voice = (() => {
   const PASS_ORD = { premier: 1, premiere: 1, deuxieme: 2, second: 2, seconde: 2, dernier: 2 };
   // Après « passage » : « deux » souvent entendu « de », « des », « deu » ; « un » entendu « hein », « in ».
   const PASS_HEARD = { de: 2, des: 2, deu: 2, deus: 2, d: 2, hein: 1, in: 1, ain: 1 };
-  const FILLER = ['a', 'la', 'le', 'de', 'du', 'numero', 'classe', 'degre', 'est', 'en', 'et'];
+  const FILLER = ['a', 'au', 'sur', 'la', 'le', 'de', 'du', 'numero', 'classe', 'degre', 'est', 'en', 'et'];
   const WORDS = { zero: 0, un: 1, une: 1, deux: 2, trois: 3, quatre: 4, cinq: 5, six: 6, sept: 7, cette: 7, huit: 8, neuf: 9,
     dix: 10, onze: 11, douze: 12, treize: 13, quatorze: 14, quinze: 15, seize: 16, ii: 2, iii: 3 };
   const TENS = { vingt: 20, trente: 30, quarante: 40 };
 
   const norm = s => s.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .replace(/([a-z])[-–]([a-z])/g, '$1 $2') // « quarante-deux », « dix-huit » : le trait d'union n'est pas un signe moins
     // Signe moins sous toutes ses formes (« -2 », « - 2 », « 0-2 », « −2 », « –2 ») ; ignoré pour la profondeur.
     .replace(/[-−–—]/g, ' moins ').replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim()
     .replace(/\b(pas|pa|par) latins?\b/g, 'palatin'); // « palatin » parfois entendu « pas latin »
@@ -99,6 +100,8 @@ PC.voice = (() => {
         const u = words[j] != null ? (WORDS[words[j]] ?? (/^\d$/.test(words[j]) ? +words[j] : null)) : null;
         if (u != null && u >= 1 && u <= 9) { n += u; i = j; }
         out.push({ n });
+      } else if (w === 'dix' && ['sept', 'cette', 'huit', 'neuf'].includes(words[i + 1])) {
+        out.push({ n: 10 + WORDS[words[i + 1]] }); i++; // « dix-huit » → 18
       } else if (/^\d+$/.test(w)) out.push({ n: +w, digits: w });
       else if (WORDS[w] != null) out.push({ n: WORDS[w] });
       else out.push({ w });
@@ -201,6 +204,7 @@ PC.voice = (() => {
   // done : face qui vient d'être complétée ; mobilité/furcation/gencive dites juste après s'y appliquent.
   function advance(msgs, done) {
     V.justDone = done || null;
+    V.advPending = null; clearTimeout(V.advTimer);
     V.idx++; V.sub = 'pd'; V.site = 0;
     if (V.idx < V.steps.length) { beep(); announce(); return; }
     beep(1200, 0.25);
@@ -216,17 +220,17 @@ PC.voice = (() => {
     msgs && msgs.push(`Passage ${V.pass} terminé`);
     speak('Passage terminé');
   }
-  function back() { V.justDone = null; V.idx = Math.max(0, V.idx - 1); V.sub = 'pd'; V.site = 0; announce(); }
+  function back() { V.justDone = null; V.advPending = null; V.idx = Math.max(0, V.idx - 1); V.sub = 'pd'; V.site = 0; announce(); }
   function goto(t, f) {
     const j = V.steps.findIndex(s => s.t === t && (!f || s.f === f));
     if (j < 0) return false;
-    V.justDone = null; V.idx = j; V.sub = 'pd'; V.site = 0;
+    V.justDone = null; V.advPending = null; V.idx = j; V.sub = 'pd'; V.site = 0;
     announce();
     return true;
   }
   // Changer de passage en restant sur la face en cours (reprise au début si le passage était terminé).
   function setPass(p) {
-    V.justDone = null; V.pass = p; V.sub = 'pd'; V.site = 0;
+    V.justDone = null; V.advPending = null; V.pass = p; V.sub = 'pd'; V.site = 0;
     if (!current()) V.idx = 0;
     const st = current();
     if (V.listening && st) speak(`Passage ${p}, ${st.t} ${PC.faceName(st.t, st.f)}`);
@@ -305,7 +309,16 @@ PC.voice = (() => {
   function handle(text, fromSpeech) {
     const exam = PC.exam();
     if (!exam || !text.trim()) return;
-    if (fromSpeech && (Date.now() < V.speakingUntil || norm(text) === V.lastSpoken)) return; // écho de la synthèse vocale
+    // Écho de la synthèse vocale (« 45 vestibulaire » capté par le micro) : ignoré, ou retiré du début de la phrase.
+    // Une phrase différente dite pendant l'annonce est conservée.
+    if (fromSpeech && V.lastSpoken) {
+      const n = norm(text), sp = V.lastSpoken;
+      if (n === sp) return;
+      if (Date.now() < V.speakingUntil) {
+        if (sp.split(' ').includes(n) || sp.startsWith(n + ' ') || sp.endsWith(' ' + n)) return;
+        if (n.startsWith(sp + ' ')) text = n.slice(sp.length + 1);
+      }
+    }
     // Commande coupée par une pause (« aller à » … « 13 ») : on la recolle à la phrase suivante.
     if (V.pendingText && Date.now() - V.pendingAt < 4000) {
       if (!norm(text).startsWith(V.pendingText)) text = V.pendingText + ' ' + text;
@@ -378,7 +391,8 @@ PC.voice = (() => {
           if (!mk) {
             const tg = V.pass === 2 ? st : (V.justDone || st);
             if (!tg) continue;
-            mk = { t: tg.t, f: tg.f, step: tg, cats: {}, explicit: V.pass === 1 };
+            // add : suite d'une dictée sur la même face (« saignement mésial » … « suppuration distale ») → on ajoute
+            mk = { t: tg.t, f: tg.f, step: tg, cats: {}, explicit: V.pass === 1, add: V.pass === 2 && V.advPending === tg };
             marks.push(mk);
           }
           mk.cat = catOf(w);
@@ -510,25 +524,37 @@ PC.voice = (() => {
   }
 
   const NAMES = { bop: 'saignement', sup: 'suppuration', pl: 'plaque' };
+  // Passage 2 : après un indice, la face suivante n'est annoncée qu'après un court silence,
+  // pour pouvoir enchaîner « saignement mésial », « suppuration distale », « plaque centre » sur la même face.
+  const ADVANCE_DELAY = 3000;
   function applyMarks(exam, marks, msgs) {
-    let advanceFrom = null;
+    let advanceFrom = null, now = false;
     for (const m of marks) {
       const fc = exam.teeth[m.t][m.f];
       const parts = [];
-      if (m.none && !Object.keys(m.cats).length) {
+      const noneOnly = m.none && !Object.keys(m.cats).length;
+      if (noneOnly) {
         fc.bop = [false, false, false]; fc.sup = [false, false, false]; fc.pl = [false, false, false];
         parts.push('rien');
       }
       for (const [k, sites] of Object.entries(m.cats)) {
         const set = sites.length ? sites : [0, 1, 2];
-        fc[k] = [0, 1, 2].map(i => set.includes(i) || (m.explicit && fc[k][i]));
+        fc[k] = [0, 1, 2].map(i => set.includes(i) || ((m.explicit || m.add) && fc[k][i]));
         parts.push(`${NAMES[k]} ${[0, 1, 2].filter(i => fc[k][i]).map(i => PC.siteLetters(m.t)[i]).join('') || '—'}`);
       }
       if (!parts.length) continue;
       msgs.push(`${m.t} ${PC.faceShort(m.t, m.f)} : ${parts.join(', ')}`);
-      if (!m.explicit) advanceFrom = m.step;
+      if (!m.explicit) { advanceFrom = m.step; now = noneOnly; }
     }
-    if (advanceFrom && current() === advanceFrom) advance(msgs, advanceFrom);
+    if (!advanceFrom || current() !== advanceFrom) return;
+    clearTimeout(V.advTimer);
+    if (now) { advance(msgs, advanceFrom); return; } // « rien » : face suivante tout de suite
+    V.advPending = advanceFrom;
+    V.advTimer = setTimeout(() => {
+      if (V.advPending !== advanceFrom || current() !== advanceFrom) return;
+      advance(null, advanceFrom);
+      V.onChange();
+    }, ADVANCE_DELAY);
   }
 
   // ---------- Reconnaissance vocale ----------
