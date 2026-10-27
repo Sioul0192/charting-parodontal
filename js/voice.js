@@ -1,11 +1,14 @@
 'use strict';
 // Dictée vocale guidée : séquence de sondage, analyse des phrases, reconnaissance vocale (Web Speech API).
 
+PC.VERSION = '27/10 b'; // affichée dans l'en-tête pour vérifier la mise à jour sur le téléphone
+
 PC.voice = (() => {
   const V = {
     pass: 1, full: [], steps: [], idx: 0, sub: 'pd', site: 0,
     listening: false, rec: null, speakingUntil: 0, lastSpoken: '',
-    log: [], interim: '', onChange: () => {}, onStatus: () => {}
+    log: [], interim: '', onChange: () => {}, onStatus: () => {},
+    done: new Set(), pendingText: null, pendingAt: 0, lastFinal: null
   };
 
   const KW = {
@@ -303,8 +306,21 @@ PC.voice = (() => {
     const exam = PC.exam();
     if (!exam || !text.trim()) return;
     if (fromSpeech && (Date.now() < V.speakingUntil || norm(text) === V.lastSpoken)) return; // écho de la synthèse vocale
+    // Commande coupée par une pause (« aller à » … « 13 ») : on la recolle à la phrase suivante.
+    if (V.pendingText && Date.now() - V.pendingAt < 4000) {
+      if (!norm(text).startsWith(V.pendingText)) text = V.pendingText + ' ' + text;
+    }
+    V.pendingText = null;
     const toks = tokenize(text);
     const msgs = [];
+    const WAITS = [...KW.jump, ...KW.mob, ...KW.furc, ...KW.kg, 'passage'];
+    if (toks.length && toks.length <= 4 && WAITS.includes(toks[0].w)
+      && toks.slice(1).every(t => t.w && (FILLER.includes(t.w) || siteOf(t.w) || faceOf(t.w) || KW.kg.includes(t.w) || t.w === 'au'))) {
+      V.pendingText = norm(text); V.pendingAt = Date.now();
+      V.log.unshift({ heard: text, msgs: ['… suite ?'] });
+      V.onChange();
+      return;
+    }
     // « 18 absente » / « 26 implant »
     for (let i = 1; i < toks.length; i++) {
       if ((KW.missing.includes(toks[i].w) || KW.implant.includes(toks[i].w)) && toks[i - 1].n != null && PC.isValidTooth(toks[i - 1].n)) {
@@ -476,11 +492,21 @@ PC.voice = (() => {
       }, 2500);
     }
     applyMarks(exam, marks, msgs);
+    if (!msgs.length && V.pass === 1 && V.site > 0 && current()) msgs.push(progressMsg(exam));
     if (!msgs.length) { msgs.push('Non compris'); beep(220, 0.15); }
     V.log.unshift({ heard: text, msgs });
     V.log.length = Math.min(V.log.length, 40);
     PC.save();
     V.onChange();
+  }
+
+  // Face en cours de saisie, ex. « 13 V profondeur 4 · · »
+  function progressMsg(exam) {
+    const st = current(), th = exam.teeth[st.t], fc = th[st.f];
+    const label = `${st.t} ${PC.faceShort(st.t, st.f)}`;
+    if (V.sub === 'furc') return `${label} furcation ${furcKeys(st).map((k, j) => j < V.site ? PC.ROMAN[th.furc[k]] : '·').join(' ')}`;
+    const vals = order(st).map((k, j) => j >= V.site ? '·' : V.sub === 'pd' ? fc.pd[k] : PC.gmShow(fc.gm[k]));
+    return `${label} ${V.sub === 'pd' ? 'profondeur' : PC.gmLabel().toLowerCase()} ${vals.join(' ')}`;
   }
 
   const NAMES = { bop: 'saignement', sup: 'suppuration', pl: 'plaque' };
@@ -518,35 +544,80 @@ PC.voice = (() => {
         const alts = Array.from(res, a => a.transcript);
         return hasCat(alts[0]) ? alts[0] : (alts.find(hasCat) || alts[0]);
       };
+      r.onstart = () => { V.done = new Set(); V.started = true; V.session = (V.session || 0) + 1; };
       r.onresult = e => {
+        V.failures = 0;
         let interim = '';
+        // Android renvoie parfois des résultats déjà traités : chaque index n'est traité qu'une fois.
         for (let k = e.resultIndex; k < e.results.length; k++) {
           const res = e.results[k];
-          if (res.isFinal) handle(pick(res), true); else interim += res[0].transcript;
+          if (res.isFinal) { if (!V.done.has(k)) { V.done.add(k); handleFinal(pick(res)); } }
+          else interim += res[0].transcript;
         }
         V.interim = interim;
         V.onStatus();
       };
       r.onerror = e => {
-        if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+        V.lastError = e.error;
+        if ((e.error === 'not-allowed' || e.error === 'service-not-allowed') && !V.started) {
+          // Refus au premier démarrage : vrai refus d'autorisation
           V.listening = false;
-          V.log.unshift({ heard: '', msgs: ['Accès au micro refusé : autorisez le micro pour ce fichier dans Chrome'] });
-        } else if (e.error !== 'no-speech' && e.error !== 'aborted') V.log.unshift({ heard: '', msgs: ['Erreur micro : ' + e.error] });
+          V.log.unshift({ heard: '', msgs: ['Accès au micro refusé : autorisez le micro pour ce site dans Chrome (icône à gauche de l\'adresse)'] });
+        } else if (e.error !== 'no-speech' && e.error !== 'aborted') {
+          V.failures = (V.failures || 0) + 1;
+        }
         V.onStatus();
       };
-      r.onend = () => { if (V.listening) { try { r.start(); } catch (_) { /* déjà démarré */ } } else V.onStatus(); };
+      // Chrome Android arrête l'écoute après chaque phrase ou silence : relance automatique.
+      r.onend = () => {
+        if (!V.listening) { V.onStatus(); return; }
+        if ((V.failures || 0) >= 5) {
+          V.listening = false;
+          V.log.unshift({ heard: '', msgs: [`Micro arrêté après plusieurs erreurs (${V.lastError}). Vérifiez la connexion internet puis relancez la dictée.`] });
+          releaseWakeLock();
+          V.onStatus();
+          return;
+        }
+        setTimeout(() => { if (V.listening) { try { r.start(); } catch (_) { /* déjà démarré */ } } }, V.failures ? 400 : 60);
+      };
       V.rec = r;
     }
-    V.listening = true;
+    V.listening = true; V.started = false; V.failures = 0;
     try { V.rec.start(); } catch (_) { /* déjà démarré */ }
+    requestWakeLock();
     announce();
     V.onStatus();
   }
   function stop() {
     V.listening = false; V.interim = '';
     try { V.rec && V.rec.stop(); } catch (_) { /* déjà arrêté */ }
+    releaseWakeLock();
     V.onStatus();
   }
 
-  return { state: V, rebuild, setPass, start, stop, handle, goto, cursor, current, order, announce, furcKeys };
+  // Android renvoie des phrases cumulatives pendant une même écoute : « 5 », puis « 5 4 », puis « 5 4 2 ».
+  // Une phrase qui reprend la précédente (même écoute, ou moins d'1,5 s après) n'est traitée que pour sa partie nouvelle.
+  function handleFinal(text) {
+    const now = Date.now(), n = norm(text);
+    const prev = V.lastFinal;
+    V.lastFinal = { n, t: now, session: V.session };
+    if (prev && (prev.session === V.session || now - prev.t < 1500) && n.length > prev.n.length && n.startsWith(prev.n + ' ')) {
+      const rest = n.slice(prev.n.length + 1);
+      if (V.pendingText) { handle(text, true); return; } // la phrase précédente attendait sa suite : on prend la nouvelle en entier
+      handle(rest, true);
+      return;
+    }
+    if (prev && n === prev.n && (prev.session === V.session || now - prev.t < 1500)) return; // doublon exact
+    handle(text, true);
+  }
+
+  // Écran allumé pendant la dictée (sinon le téléphone se verrouille et coupe le micro).
+  let wakeLock = null;
+  async function requestWakeLock() {
+    try { if ('wakeLock' in navigator && !wakeLock) { wakeLock = await navigator.wakeLock.request('screen'); wakeLock.addEventListener('release', () => { wakeLock = null; }); } } catch (_) { /* refusé ou non pris en charge */ }
+  }
+  function releaseWakeLock() { try { wakeLock && wakeLock.release(); } catch (_) { /* déjà libéré */ } wakeLock = null; }
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && V.listening) requestWakeLock(); });
+
+  return { state: V, rebuild, setPass, start, stop, handle, handleFinal, goto, cursor, current, order, announce, furcKeys };
 })();
