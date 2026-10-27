@@ -24,6 +24,7 @@
       if (e.target.id === 'exam-select') { PC.db.current.examId = e.target.value; PC.save(); VOICE.rebuild(true); show(view); }
       if (e.target.id === 'exam-date') { PC.exam().date = e.target.value; PC.save(); renderCtx(); }
     });
+    $('.badge').textContent = 'version ' + (PC.VERSION || 'test');
     bindChart();
     buildVoicePanel();
     show(view);
